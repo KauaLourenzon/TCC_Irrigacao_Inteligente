@@ -1,12 +1,26 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Droplets, Thermometer, Clock, CalendarClock, Moon, Sun, SunMoon, Sprout } from "lucide-react";
+import {
+  Bell,
+  ArrowLeft,
+  CalendarClock,
+  Cable,
+  Clock,
+  Droplets,
+  MessageCircle,
+  Moon,
+  Sun,
+  SunMoon,
+  Thermometer,
+  Unplug,
+} from "lucide-react";
 import { toast } from "sonner";
-
+import { enablePushNotifications } from "@/lib/push-client";
 import { PotMascot } from "@/components/PotMascot";
 import { supabase } from "@/integrations/supabase/client";
 import { useTheme } from "@/hooks/use-theme";
+import { useSerialSensor } from "@/hooks/use-serial-sensor";
 import { resolveMood } from "@/lib/plant-mood";
 import {
   MODE_LABEL,
@@ -26,26 +40,8 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Plantinha — Monitor de umidade e rega da sua planta" },
-      {
-        name: "description",
-        content:
-          "Acompanhe umidade do solo, temperatura e regas da sua planta em tempo real com sensor ESP32, e deixe o vasinho contar como está se sentindo.",
-      },
-      { property: "og:title", content: "Plantinha — Monitor da sua planta" },
-      {
-        property: "og:description",
-        content:
-          "Dashboard fofo para monitorar umidade, temperatura e rega automática da sua planta com ESP32.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
-  }),
-  component: Dashboard,
+export const Route = createFileRoute("/_authed/plantas/$plantId/")({
+  component: PlantDashboard,
 });
 
 function useClock() {
@@ -73,7 +69,10 @@ function Card({
       <header className="flex items-center gap-2 text-sm text-muted-foreground">
         <span
           className="grid size-8 shrink-0 place-items-center rounded-full"
-          style={{ backgroundColor: `color-mix(in oklab, ${accent ?? "var(--color-primary)"} 18%, transparent)`, color: accent ?? "var(--color-primary)" }}
+          style={{
+            backgroundColor: `color-mix(in oklab, ${accent ?? "var(--color-primary)"} 18%, transparent)`,
+            color: accent ?? "var(--color-primary)",
+          }}
         >
           {icon}
         </span>
@@ -112,14 +111,22 @@ function Gauge({ value, color }: { value: number; color: string }) {
   );
 }
 
-function Dashboard() {
+function PlantDashboard() {
+  const { plantId } = Route.useParams();
   const queryClient = useQueryClient();
   const now = useClock();
   const { choice, setChoice } = useTheme();
+  const serial = useSerialSensor(plantId);
 
-  const plantQuery = useQuery({ queryKey: ["plant"], queryFn: fetchPlant });
-  const readingsQuery = useQuery({ queryKey: ["readings"], queryFn: () => fetchReadings(24) });
-  const wateringsQuery = useQuery({ queryKey: ["waterings"], queryFn: () => fetchWaterings(10) });
+  const plantQuery = useQuery({ queryKey: ["plant", plantId], queryFn: () => fetchPlant(plantId) });
+  const readingsQuery = useQuery({
+    queryKey: ["readings", plantId],
+    queryFn: () => fetchReadings(plantId, 24),
+  });
+  const wateringsQuery = useQuery({
+    queryKey: ["waterings", plantId],
+    queryFn: () => fetchWaterings(plantId, 10),
+  });
 
   const plant = plantQuery.data;
   const readings = readingsQuery.data ?? [];
@@ -137,24 +144,30 @@ function Dashboard() {
     }
   }, [plant?.id, plant?.name, plant?.moisture_threshold]);
 
-  // Leituras e regas em tempo real (o ESP32 escreve, o painel reage)
+  // Leituras e regas em tempo real desta planta
   useEffect(() => {
     const channel = supabase
-      .channel("plant-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "readings" }, () => {
-        queryClient.invalidateQueries({ queryKey: ["readings"] });
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "waterings" }, () => {
-        queryClient.invalidateQueries({ queryKey: ["waterings"] });
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "plant" }, () => {
-        queryClient.invalidateQueries({ queryKey: ["plant"] });
-      })
+      .channel(`plant-live-${plantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "readings", filter: `plant_id=eq.${plantId}` },
+        () => queryClient.invalidateQueries({ queryKey: ["readings", plantId] }),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "waterings", filter: `plant_id=eq.${plantId}` },
+        () => queryClient.invalidateQueries({ queryKey: ["waterings", plantId] }),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "plants", filter: `id=eq.${plantId}` },
+        () => queryClient.invalidateQueries({ queryKey: ["plant", plantId] }),
+      )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [queryClient]);
+  }, [queryClient, plantId]);
 
   const mood = useMemo(
     () =>
@@ -172,7 +185,7 @@ function Dashboard() {
     if (!plant) return;
     try {
       await updatePlant(plant.id, patch);
-      await queryClient.invalidateQueries({ queryKey: ["plant"] });
+      await queryClient.invalidateQueries({ queryKey: ["plant", plantId] });
       toast.success(message);
     } catch {
       toast.error("Não conseguimos salvar agora. Tente de novo.");
@@ -183,9 +196,17 @@ function Dashboard() {
     if (!plant) return;
     try {
       await triggerWatering(plant.id, "manual", latest ? Number(latest.soil_moisture) : null);
+      if (serial.status === "connected") {
+        try {
+          await serial.sendCommand("WATER");
+        } catch {
+          // sensor pode ter sido desconectado nesse meio tempo; a rega
+          // já foi registrada no banco de qualquer forma.
+        }
+      }
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["waterings"] }),
-        queryClient.invalidateQueries({ queryKey: ["plant"] }),
+        queryClient.invalidateQueries({ queryKey: ["waterings", plantId] }),
+        queryClient.invalidateQueries({ queryKey: ["plant", plantId] }),
       ]);
       toast.success("Rega enviada para o vasinho 💧");
     } catch {
@@ -210,9 +231,13 @@ function Dashboard() {
     <main className="mx-auto w-full max-w-5xl px-4 pb-16 pt-6 sm:px-6 lg:px-8">
       <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 sm:flex sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-secondary text-primary">
-            <Sprout className="size-6" />
-          </span>
+          <Link
+            to="/"
+            className="grid size-11 shrink-0 place-items-center rounded-2xl bg-secondary text-primary"
+            aria-label="Voltar para minhas plantas"
+          >
+            <ArrowLeft className="size-5" />
+          </Link>
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Minha plantinha
@@ -240,6 +265,72 @@ function Dashboard() {
         </div>
       </header>
 
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link
+          to="/plantas/$plantId/assistente"
+          params={{ plantId }}
+          className="inline-flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm font-semibold hover:bg-secondary"
+        >
+          <MessageCircle className="size-4" /> Falar com {plant?.name ?? "a planta"}
+        </Link>
+        <Button
+          variant="secondary"
+          className="rounded-full"
+          onClick={async () => {
+            const result = await enablePushNotifications();
+            if (result.ok) toast.success("Notificações ativadas!");
+            else toast.error(result.reason);
+          }}
+        >
+          <Bell className="size-4" /> Ativar avisos
+      </Button>
+      </div>
+
+      {/* Sensor USB */}
+      <section className="card-soft mt-4 flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className={`grid size-9 shrink-0 place-items-center rounded-full ${
+              serial.status === "connected"
+                ? "bg-leaf/20 text-leaf"
+                : "bg-muted text-muted-foreground"
+            }`}
+          >
+            <Cable className="size-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">
+              {serial.status === "connected" && (serial.portLabel ?? "Sensor conectado")}
+              {serial.status === "connecting" && "Conectando…"}
+              {serial.status === "disconnected" && "Nenhum sensor conectado"}
+              {serial.status === "unsupported" &&
+                "Seu navegador não suporta conexão USB (use Chrome ou Edge)"}
+              {serial.status === "error" && (serial.lastError ?? "Erro na conexão")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Conecte o ESP32 desta planta via cabo USB para enviar leituras.
+            </p>
+          </div>
+        </div>
+        {serial.status === "connected" ? (
+          <Button
+            variant="secondary"
+            className="rounded-full"
+            onClick={() => void serial.disconnect()}
+          >
+            <Unplug className="size-4" /> Desconectar
+          </Button>
+        ) : (
+          <Button
+            className="rounded-full"
+            disabled={serial.status === "unsupported" || serial.status === "connecting"}
+            onClick={() => void serial.connect()}
+          >
+            <Cable className="size-4" /> Conectar sensor
+          </Button>
+        )}
+      </section>
+
       {/* Mascote + estado */}
       <section className="card-soft mt-6 grid gap-6 p-6 sm:grid-cols-[200px_minmax(0,1fr)] sm:items-center">
         <PotMascot mood={mood.key} className="animate-bob mx-auto w-40 sm:w-full" />
@@ -264,7 +355,11 @@ function Dashboard() {
           </p>
         </Card>
 
-        <Card icon={<Thermometer className="size-4" />} label="Temperatura" accent="var(--color-terracotta)">
+        <Card
+          icon={<Thermometer className="size-4" />}
+          label="Temperatura"
+          accent="var(--color-terracotta)"
+        >
           <p className="font-display text-4xl font-bold">
             {latest?.temperature != null ? `${Number(latest.temperature).toFixed(1)}°C` : "—"}
           </p>
@@ -280,7 +375,11 @@ function Dashboard() {
           </p>
         </Card>
 
-        <Card icon={<CalendarClock className="size-4" />} label="Regamentos" accent="var(--color-sun)">
+        <Card
+          icon={<CalendarClock className="size-4" />}
+          label="Regamentos"
+          accent="var(--color-sun)"
+        >
           <p className="text-xs font-semibold uppercase text-muted-foreground">Último</p>
           <p className="font-display text-xl font-bold">
             {formatDateTime(waterings[0]?.watered_at ?? null)}
@@ -467,7 +566,7 @@ function Dashboard() {
       </section>
 
       <footer className="mt-8 text-center text-xs text-muted-foreground">
-        Sensor ESP32 envia leituras em <code>/api/public/esp32/telemetry</code>
+        Sensor conectado via cabo USB direto no navegador (Web Serial API).
       </footer>
     </main>
   );

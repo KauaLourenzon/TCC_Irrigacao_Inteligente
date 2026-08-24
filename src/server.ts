@@ -1,5 +1,6 @@
 import "./lib/error-capture";
 
+import { startProactiveScheduler } from "./lib/scheduler.server";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 
@@ -43,6 +44,7 @@ function isH3SwallowedErrorBody(body: string): boolean {
     return false;
   }
 }
+startProactiveScheduler();
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {

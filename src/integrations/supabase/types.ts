@@ -14,83 +14,143 @@ export type Database = {
   }
   public: {
     Tables: {
-      plant: {
+      plants: {
         Row: {
-          created_at: string
           id: string
+          owner_id: string
+          name: string
+          species: string | null
           mode: string
           moisture_threshold: number
-          name: string
-          schedule_days: number[]
           schedule_times: string[]
-          updated_at: string
+          schedule_days: number[]
           water_requested_at: string | null
+          created_at: string
+          updated_at: string
         }
         Insert: {
-          created_at?: string
           id?: string
+          owner_id?: string
+          name?: string
+          species?: string | null
           mode?: string
           moisture_threshold?: number
-          name?: string
-          schedule_days?: number[]
           schedule_times?: string[]
-          updated_at?: string
+          schedule_days?: number[]
           water_requested_at?: string | null
+          created_at?: string
+          updated_at?: string
         }
         Update: {
-          created_at?: string
           id?: string
+          owner_id?: string
+          name?: string
+          species?: string | null
           mode?: string
           moisture_threshold?: number
-          name?: string
-          schedule_days?: number[]
           schedule_times?: string[]
-          updated_at?: string
+          schedule_days?: number[]
           water_requested_at?: string | null
+          created_at?: string
+          updated_at?: string
         }
         Relationships: []
       }
       readings: {
         Row: {
           id: string
-          recorded_at: string
+          plant_id: string
           soil_moisture: number
           temperature: number | null
+          recorded_at: string
         }
         Insert: {
           id?: string
-          recorded_at?: string
+          plant_id: string
           soil_moisture: number
           temperature?: number | null
+          recorded_at?: string
         }
         Update: {
           id?: string
-          recorded_at?: string
+          plant_id?: string
           soil_moisture?: number
           temperature?: number | null
+          recorded_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "readings_plant_id_fkey"
+            columns: ["plant_id"]
+            isOneToOne: false
+            referencedRelation: "plants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       waterings: {
         Row: {
           id: string
-          soil_moisture: number | null
+          plant_id: string
           source: string
+          soil_moisture: number | null
           watered_at: string
         }
         Insert: {
           id?: string
-          soil_moisture?: number | null
+          plant_id: string
           source?: string
+          soil_moisture?: number | null
           watered_at?: string
         }
         Update: {
           id?: string
-          soil_moisture?: number | null
+          plant_id?: string
           source?: string
+          soil_moisture?: number | null
           watered_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "waterings_plant_id_fkey"
+            columns: ["plant_id"]
+            isOneToOne: false
+            referencedRelation: "plants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      plant_chat_messages: {
+        Row: {
+          id: string
+          plant_id: string
+          role: string
+          content: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          plant_id: string
+          role: string
+          content: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          plant_id?: string
+          role?: string
+          content?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plant_chat_messages_plant_id_fkey"
+            columns: ["plant_id"]
+            isOneToOne: false
+            referencedRelation: "plants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {

@@ -9,68 +9,137 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiPublicEsp32TelemetryRouteImport } from './routes/api/public/esp32/telemetry'
+import { Route as AuthedRouteImport } from './routes/_authed'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
+import { Route as AuthedPlantasPlantIdIndexRouteImport } from './routes/_authed/plantas/$plantId/index'
+import { Route as AuthedPlantasPlantIdAssistenteRouteImport } from './routes/_authed/plantas/$plantId/assistente'
 
-const IndexRoute = IndexRouteImport.update({
+const AuthedRoute = AuthedRouteImport.update({
+  id: '/_authed',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthedIndexRoute = AuthedIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AuthedRoute,
 } as any)
-const ApiPublicEsp32TelemetryRoute = ApiPublicEsp32TelemetryRouteImport.update({
-  id: '/api/public/esp32/telemetry',
-  path: '/api/public/esp32/telemetry',
-  getParentRoute: () => rootRouteImport,
-} as any)
+const AuthedPlantasPlantIdIndexRoute =
+  AuthedPlantasPlantIdIndexRouteImport.update({
+    id: '/plantas/$plantId/',
+    path: '/plantas/$plantId/',
+    getParentRoute: () => AuthedRoute,
+  } as any)
+const AuthedPlantasPlantIdAssistenteRoute =
+  AuthedPlantasPlantIdAssistenteRouteImport.update({
+    id: '/plantas/$plantId/assistente',
+    path: '/plantas/$plantId/assistente',
+    getParentRoute: () => AuthedRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/api/public/esp32/telemetry': typeof ApiPublicEsp32TelemetryRoute
+  '/': typeof AuthedIndexRoute
+  '/login': typeof LoginRoute
+  '/plantas/$plantId/assistente': typeof AuthedPlantasPlantIdAssistenteRoute
+  '/plantas/$plantId/': typeof AuthedPlantasPlantIdIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/api/public/esp32/telemetry': typeof ApiPublicEsp32TelemetryRoute
+  '/login': typeof LoginRoute
+  '/': typeof AuthedIndexRoute
+  '/plantas/$plantId/assistente': typeof AuthedPlantasPlantIdAssistenteRoute
+  '/plantas/$plantId': typeof AuthedPlantasPlantIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/api/public/esp32/telemetry': typeof ApiPublicEsp32TelemetryRoute
+  '/_authed': typeof AuthedRouteWithChildren
+  '/login': typeof LoginRoute
+  '/_authed/': typeof AuthedIndexRoute
+  '/_authed/plantas/$plantId/assistente': typeof AuthedPlantasPlantIdAssistenteRoute
+  '/_authed/plantas/$plantId/': typeof AuthedPlantasPlantIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/esp32/telemetry'
+  fullPaths:
+    '/' | '/login' | '/plantas/$plantId/assistente' | '/plantas/$plantId/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/esp32/telemetry'
-  id: '__root__' | '/' | '/api/public/esp32/telemetry'
+  to: '/login' | '/' | '/plantas/$plantId/assistente' | '/plantas/$plantId'
+  id:
+    | '__root__'
+    | '/_authed'
+    | '/login'
+    | '/_authed/'
+    | '/_authed/plantas/$plantId/assistente'
+    | '/_authed/plantas/$plantId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  ApiPublicEsp32TelemetryRoute: typeof ApiPublicEsp32TelemetryRoute
+  AuthedRoute: typeof AuthedRouteWithChildren
+  LoginRoute: typeof LoginRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
+    '/_authed': {
+      id: '/_authed'
+      path: ''
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof AuthedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/public/esp32/telemetry': {
-      id: '/api/public/esp32/telemetry'
-      path: '/api/public/esp32/telemetry'
-      fullPath: '/api/public/esp32/telemetry'
-      preLoaderRoute: typeof ApiPublicEsp32TelemetryRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authed/': {
+      id: '/_authed/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof AuthedIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/plantas/$plantId/': {
+      id: '/_authed/plantas/$plantId/'
+      path: '/plantas/$plantId'
+      fullPath: '/plantas/$plantId/'
+      preLoaderRoute: typeof AuthedPlantasPlantIdIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/plantas/$plantId/assistente': {
+      id: '/_authed/plantas/$plantId/assistente'
+      path: '/plantas/$plantId/assistente'
+      fullPath: '/plantas/$plantId/assistente'
+      preLoaderRoute: typeof AuthedPlantasPlantIdAssistenteRouteImport
+      parentRoute: typeof AuthedRoute
     }
   }
 }
 
+interface AuthedRouteChildren {
+  AuthedIndexRoute: typeof AuthedIndexRoute
+  AuthedPlantasPlantIdAssistenteRoute: typeof AuthedPlantasPlantIdAssistenteRoute
+  AuthedPlantasPlantIdIndexRoute: typeof AuthedPlantasPlantIdIndexRoute
+}
+
+const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedIndexRoute: AuthedIndexRoute,
+  AuthedPlantasPlantIdAssistenteRoute: AuthedPlantasPlantIdAssistenteRoute,
+  AuthedPlantasPlantIdIndexRoute: AuthedPlantasPlantIdIndexRoute,
+}
+
+const AuthedRouteWithChildren =
+  AuthedRoute._addFileChildren(AuthedRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  ApiPublicEsp32TelemetryRoute: ApiPublicEsp32TelemetryRoute,
+  AuthedRoute: AuthedRouteWithChildren,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
