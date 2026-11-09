@@ -69,6 +69,34 @@ Para executar no navegador:
 flutter run -d chrome
 ```
 
+### Executar conectado ao Supabase
+
+O cliente Supabase é inicializado quando as variáveis abaixo são informadas.
+Use apenas a chave publicável no aplicativo; nunca use uma chave `secret` ou
+`service_role` no Flutter.
+
+No PowerShell:
+
+```powershell
+flutter run -d emulator-5554 `
+  --dart-define=SUPABASE_URL=https://SEU_PROJETO.supabase.co `
+  --dart-define=SUPABASE_PUBLISHABLE_KEY=SUA_CHAVE_PUBLICAVEL
+```
+
+Sem esses parâmetros, o app continua abrindo em modo simulado.
+
+Para trabalhar com migrations pela CLI, o projeto já possui a pasta
+`supabase/` inicializada. A CLI pode ser executada sem instalação global:
+
+```powershell
+npx supabase --version
+npx supabase init
+```
+
+O comando `supabase link` só deve ser executado depois de autenticar a CLI e
+informar o project ref do painel Supabase. Não coloque tokens de acesso no
+repositório.
+
 ## Primeiro acesso e dados simulados
 
 No primeiro acesso, o aplicativo abre o processo de cadastro da planta. As configurações são salvas localmente no `SharedPreferences`.

@@ -2,6 +2,12 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../data/services/supabase_plant_store.dart';
+import '../../data/services/supabase_history_store.dart';
+import '../../data/services/supabase_notification_store.dart';
+import '../../data/services/esp32_local_service.dart';
 
 const _green = Color(0xFF00513E);
 const _greenDark = Color(0xFF003F32);
@@ -9,8 +15,169 @@ const _mint = Color(0xFFE7F6EC);
 const _background = Color(0xFFF7FAF5);
 const _showWaterAlert = false;
 
+void showNotificationDrawer(BuildContext context) {
+  showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Notificações',
+    barrierColor: Colors.black54,
+    transitionDuration: const Duration(milliseconds: 240),
+    pageBuilder: (context, animation, secondaryAnimation) => Align(
+      alignment: Alignment.centerRight,
+      child: Material(
+        color: Colors.transparent,
+        child: _NotificationDrawer(onClose: () => Navigator.pop(context)),
+      ),
+    ),
+    transitionBuilder: (context, animation, secondaryAnimation, child) =>
+        SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOut)),
+          child: child,
+        ),
+  );
+}
+
+class _AppNotification {
+  _AppNotification({
+    required this.title,
+    required this.message,
+    required this.time,
+    required this.icon,
+    this.critical = false,
+  });
+
+  final String title;
+  final String message;
+  final String time;
+  final IconData icon;
+  final bool critical;
+}
+
+class _NotificationDrawer extends StatefulWidget {
+  const _NotificationDrawer({required this.onClose});
+  final VoidCallback onClose;
+
+  @override
+  State<_NotificationDrawer> createState() => _NotificationDrawerState();
+}
+
+class _NotificationDrawerState extends State<_NotificationDrawer> {
+  final notifications = <_AppNotification>[
+    _AppNotification(
+      title: 'Irrigação concluída',
+      message: 'A Válvula 2 foi encerrada com sucesso.',
+      time: 'Hoje, 07:00',
+      icon: Icons.check_circle_outline,
+    ),
+    _AppNotification(
+      title: 'Solo seco',
+      message: 'A umidade do solo está abaixo do limite configurado.',
+      time: 'Ontem, 18:00',
+      icon: Icons.water_drop_outlined,
+    ),
+    _AppNotification(
+      title: 'Atenção ao reservatório',
+      message: 'O nível de água está baixo.',
+      time: 'Ontem, 12:20',
+      icon: Icons.warning_amber_rounded,
+      critical: true,
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Container(
+      width: MediaQuery.sizeOf(context).width * .86,
+      height: double.infinity,
+      color: _background,
+      padding: const EdgeInsets.fromLTRB(18, 18, 12, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Notificações',
+                  style: TextStyle(
+                    color: _greenDark,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (notifications.isNotEmpty)
+                TextButton(
+                  onPressed: () => setState(notifications.clear),
+                  child: const Text('Apagar todas'),
+                ),
+              IconButton(
+                onPressed: widget.onClose,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          const Divider(),
+          if (notifications.isEmpty)
+            const Expanded(
+              child: Center(
+                child: Text(
+                  'Nenhuma notificação',
+                  style: TextStyle(color: Colors.black54),
+                ),
+              ),
+            )
+          else
+            Expanded(
+              child: ListView.separated(
+                itemCount: notifications.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final notification = notifications[index];
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                    leading: CircleAvatar(
+                      backgroundColor: notification.critical
+                          ? Colors.red.withValues(alpha: .12)
+                          : _mint,
+                      child: Icon(
+                        notification.icon,
+                        color: notification.critical ? Colors.red : _green,
+                      ),
+                    ),
+                    title: Text(
+                      notification.title,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        '${notification.message}\n${notification.time}',
+                      ),
+                    ),
+                    trailing: IconButton(
+                      tooltip: 'Apagar notificação',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () =>
+                          setState(() => notifications.removeAt(index)),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
 class MockAppShell extends StatefulWidget {
-  const MockAppShell({super.key});
+  const MockAppShell({this.useSupabase = false, super.key});
+
+  final bool useSupabase;
 
   @override
   State<MockAppShell> createState() => _MockAppShellState();
@@ -26,17 +193,102 @@ class _MockAppShellState extends State<MockAppShell> {
   String plantName = '';
   String irrigationMode = 'Inteligente';
   String valve2Mode = 'Gotejamento';
+  String pendingFrequency = '1';
+  String pendingFinishMode = 'Duração';
+  int pendingDurationSeconds = 30;
+  double pendingSoilTrigger = 35;
+  double pendingSoilHumidityTarget = 50;
+  List<ScheduleTimeInput> pendingScheduleTimes = const [];
   final plantNames = <String>[];
   final plantModes = <String, String>{};
   final plantValve2Modes = <String, String>{};
+  final plantFrequencies = <String, String>{};
+  final plantScheduleTimes = <String, List<ScheduleTimeInput>>{};
+  final plantIds = <String, String>{};
+  SupabasePlantStore? plantStore;
+  SupabaseHistoryStore? historyStore;
+  SupabaseNotificationStore? notificationStore;
 
   @override
   void initState() {
     super.initState();
+    if (widget.useSupabase) {
+      plantStore = SupabasePlantStore(Supabase.instance.client);
+      historyStore = SupabaseHistoryStore(Supabase.instance.client);
+      notificationStore = SupabaseNotificationStore(Supabase.instance.client);
+    }
     _loadPlants();
   }
 
   Future<void> _loadPlants() async {
+    if (plantStore != null) {
+      // Ao usar o backend real, os dados antigos do protótipo local não
+      // participam mais do fluxo e são removidos do dispositivo.
+      final preferences = await SharedPreferences.getInstance();
+      await Future.wait([
+        preferences.remove(_plantsStorageKey),
+        preferences.remove(_irrigationModeStorageKey),
+        preferences.remove('mock_plant_modes'),
+        preferences.remove('mock_plant_valves'),
+        preferences.remove('mock_plant_frequencies'),
+      ]);
+      try {
+        final loadedRecords = await plantStore!.listPlants();
+        // O seletor usa o nome como valor; nomes repetidos quebram o
+        // DropdownButton. Mantemos apenas o primeiro registro exibido.
+        final uniqueRecords = <String, SupabasePlantRecord>{};
+        for (final record in loadedRecords) {
+          uniqueRecords.putIfAbsent(record.name, () => record);
+        }
+        final records = uniqueRecords.values.toList();
+        if (!mounted) return;
+        setState(() {
+          plantNames
+            ..clear()
+            ..addAll(records.map((record) => record.name));
+          plantIds
+            ..clear()
+            ..addEntries(
+              records.map((record) => MapEntry(record.name, record.id)),
+            );
+          plantModes
+            ..clear()
+            ..addEntries(
+              records.map((record) => MapEntry(record.name, record.mode)),
+            );
+          plantValve2Modes
+            ..clear()
+            ..addEntries(
+              records.map((record) => MapEntry(record.name, record.valve2Mode)),
+            );
+          plantFrequencies
+            ..clear()
+            ..addEntries(
+              records.map(
+                (record) => MapEntry(record.name, record.frequencyDays),
+              ),
+            );
+          plantScheduleTimes
+            ..clear()
+            ..addEntries(
+              records.map(
+                (record) => MapEntry(record.name, record.scheduleTimes),
+              ),
+            );
+          plantName = plantNames.isEmpty ? '' : plantNames.first;
+          irrigationMode = plantModes[plantName] ?? 'Inteligente';
+          valve2Mode = plantValve2Modes[plantName] ?? 'Gotejamento';
+          isLoading = false;
+        });
+      } catch (error) {
+        if (!mounted) return;
+        setState(() => isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao carregar plantas: $error')),
+        );
+      }
+      return;
+    }
     final preferences = await SharedPreferences.getInstance();
     // Remove a persistência antiga usada pelos mocks anteriores.
     await preferences.remove('mock_plants');
@@ -50,14 +302,18 @@ class _MockAppShellState extends State<MockAppShell> {
     final savedPlantValves = _decodeConfigurationMap(
       preferences.getString('mock_plant_valves'),
     );
+    final savedPlantFrequencies = _decodeConfigurationMap(
+      preferences.getString('mock_plant_frequencies'),
+    );
     if (!mounted) return;
     setState(() {
       plantNames
         ..clear()
-        ..addAll(savedPlants);
+        ..addAll(savedPlants.toSet());
       plantName = plantNames.isEmpty ? '' : plantNames.first;
       plantModes.addAll(savedPlantModes);
       plantValve2Modes.addAll(savedPlantValves);
+      plantFrequencies.addAll(savedPlantFrequencies);
       final selectedMode = plantModes[plantName];
       final selectedValve = plantValve2Modes[plantName];
       if (selectedMode != null) irrigationMode = selectedMode;
@@ -103,11 +359,49 @@ class _MockAppShellState extends State<MockAppShell> {
       'mock_plant_valves',
       jsonEncode(plantValve2Modes),
     );
+    await preferences.setString(
+      'mock_plant_frequencies',
+      jsonEncode(plantFrequencies),
+    );
   }
 
-  void addPlant(String name) {
+  Future<void> addPlant(String name) async {
     final normalizedName = name.trim();
     if (normalizedName.isEmpty) return;
+    if (plantStore != null) {
+      if (plantNames.contains(normalizedName)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Essa planta já está cadastrada.')),
+          );
+        }
+        return;
+      }
+      final id = await plantStore!.createPlant(
+        name: normalizedName,
+        mode: irrigationMode,
+        valve2Mode: valve2Mode,
+        frequencyDays: int.tryParse(pendingFrequency) ?? 1,
+        finishMode: pendingFinishMode,
+        durationSeconds: pendingDurationSeconds,
+        soilTrigger: pendingSoilTrigger,
+        soilHumidityTarget: pendingSoilHumidityTarget,
+        scheduleTimes: pendingScheduleTimes,
+      );
+      if (!mounted) return;
+      setState(() {
+        plantNames.add(normalizedName);
+        plantIds[normalizedName] = id;
+        plantName = normalizedName;
+        plantModes[normalizedName] = irrigationMode;
+        plantValve2Modes[normalizedName] = valve2Mode;
+        plantFrequencies[normalizedName] = pendingFrequency;
+        plantScheduleTimes[normalizedName] = pendingScheduleTimes;
+        isLoading = false;
+        isAddingPlant = false;
+      });
+      return;
+    }
     setState(() {
       if (!plantNames.contains(normalizedName)) {
         plantNames.add(normalizedName);
@@ -115,6 +409,7 @@ class _MockAppShellState extends State<MockAppShell> {
       plantName = normalizedName;
       plantModes[normalizedName] = irrigationMode;
       plantValve2Modes[normalizedName] = valve2Mode;
+      plantFrequencies[normalizedName] = pendingFrequency;
       isLoading = false;
       isAddingPlant = false;
     });
@@ -137,6 +432,7 @@ class _MockAppShellState extends State<MockAppShell> {
     });
     _saveIrrigationMode(mode);
     _savePlantConfigurations();
+    _saveRemoteConfiguration();
   }
 
   void _changeValve2(String value) {
@@ -145,9 +441,51 @@ class _MockAppShellState extends State<MockAppShell> {
       plantValve2Modes[plantName] = value;
     });
     _savePlantConfigurations();
+    _saveRemoteConfiguration();
+  }
+
+  void _changeFrequency(String value) {
+    setState(() => plantFrequencies[plantName] = value);
+    _savePlantConfigurations();
+    _saveRemoteConfiguration();
+  }
+
+  Future<void> _saveRemoteConfiguration() async {
+    final id = plantIds[plantName];
+    if (plantStore == null || id == null) return;
+    await plantStore!.saveConfiguration(
+      plantId: id,
+      mode: irrigationMode,
+      valve2Mode: valve2Mode,
+      frequencyDays: int.tryParse(plantFrequencies[plantName] ?? '1') ?? 1,
+    );
+  }
+
+  Future<void> _saveControlConfiguration(
+    IrrigationControlConfiguration configuration,
+  ) async {
+    final id = plantIds[plantName];
+    if (plantStore != null && id != null) {
+      await plantStore!.saveConfiguration(
+        plantId: id,
+        mode: configuration.mode,
+        valve2Mode: configuration.valve2Mode,
+        frequencyDays: configuration.frequencyDays,
+        finishMode: configuration.finishMode,
+        durationSeconds: configuration.durationSeconds,
+        soilTrigger: configuration.soilTrigger,
+        soilHumidityTarget: configuration.soilHumidityTarget,
+        scheduleTimes: configuration.scheduleTimes,
+      );
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Configuração de irrigação salva.')),
+    );
   }
 
   Future<void> editPlantName() async {
+    final oldName = plantName;
     final newName = await showDialog<String>(
       context: context,
       builder: (_) => _EditPlantNameDialog(initialName: plantName),
@@ -158,7 +496,12 @@ class _MockAppShellState extends State<MockAppShell> {
       if (index >= 0) plantNames[index] = newName;
       plantName = newName;
     });
-    _savePlants();
+    final id = plantIds[oldName];
+    if (plantStore != null && id != null) {
+      await plantStore!.renamePlant(id, newName);
+    } else {
+      await _savePlants();
+    }
   }
 
   @override
@@ -175,10 +518,19 @@ class _MockAppShellState extends State<MockAppShell> {
         onPlantCreated: addPlant,
         initialPlantName: '',
         skipEspSetup: false,
-        onConfigurationSaved: (mode) {
-          setState(() => irrigationMode = mode);
-          _saveIrrigationMode(mode);
+        onConfigurationSaved: (configuration) {
+          setState(() {
+            irrigationMode = configuration.mode;
+            valve2Mode = configuration.valve2Mode;
+            pendingFinishMode = configuration.finishMode;
+            pendingDurationSeconds = configuration.durationSeconds;
+            pendingSoilTrigger = configuration.soilTrigger;
+            pendingSoilHumidityTarget = configuration.soilHumidityTarget;
+            pendingScheduleTimes = configuration.scheduleTimes;
+          });
+          _saveIrrigationMode(configuration.mode);
         },
+        onFrequencySaved: (frequency) => pendingFrequency = frequency,
       );
     }
 
@@ -187,10 +539,19 @@ class _MockAppShellState extends State<MockAppShell> {
         onPlantCreated: _finishPlantEdit,
         initialPlantName: plantName,
         skipEspSetup: true,
-        onConfigurationSaved: (mode) {
-          setState(() => irrigationMode = mode);
-          _saveIrrigationMode(mode);
+        onConfigurationSaved: (configuration) {
+          setState(() {
+            irrigationMode = configuration.mode;
+            valve2Mode = configuration.valve2Mode;
+            pendingFinishMode = configuration.finishMode;
+            pendingDurationSeconds = configuration.durationSeconds;
+            pendingSoilTrigger = configuration.soilTrigger;
+            pendingSoilHumidityTarget = configuration.soilHumidityTarget;
+            pendingScheduleTimes = configuration.scheduleTimes;
+          });
+          _saveIrrigationMode(configuration.mode);
         },
+        onFrequencySaved: _changeFrequency,
       );
     }
 
@@ -210,24 +571,36 @@ class _MockAppShellState extends State<MockAppShell> {
         plants: plantNames,
         initialMode: irrigationMode,
         initialValve2Mode: valve2Mode,
+        initialFrequency: plantFrequencies[plantName] ?? '1',
+        initialScheduleTimes: plantScheduleTimes[plantName] ?? const [],
         onPlantSelected: _selectPlant,
         onEditName: editPlantName,
         onAddPlant: () => setState(() => isAddingPlant = true),
         onModeChanged: _changeMode,
         onValve2Changed: _changeValve2,
-      ),
-      PlantInfoMockScreen(
-        plantName: plantName,
-        onEdit: () => setState(() => isEditingPlant = true),
-        onRename: _renameSelectedPlant,
-        onDelete: _deleteSelectedPlant,
-        onResetEsp: _resetEspConfiguration,
+        onFrequencyChanged: _changeFrequency,
+        onSave: _saveControlConfiguration,
       ),
       HistoryMockScreen(
         plantName: plantName,
         plants: plantNames,
+        plantId: plantIds[plantName],
+        historyStore: historyStore,
         onPlantSelected: _selectPlant,
         onAddPlant: () => setState(() => isAddingPlant = true),
+      ),
+      PlantInfoMockScreen(
+        plantName: plantName,
+        plantId: plantIds[plantName],
+        irrigationMode: irrigationMode,
+        notificationStore: notificationStore,
+        onSignOut: widget.useSupabase
+            ? () => Supabase.instance.client.auth.signOut()
+            : null,
+        onEdit: () => setState(() => isEditingPlant = true),
+        onRename: _renameSelectedPlant,
+        onDelete: _deleteSelectedPlant,
+        onResetEsp: _resetEspConfiguration,
       ),
     ];
 
@@ -246,27 +619,44 @@ class _MockAppShellState extends State<MockAppShell> {
     if (normalized.isEmpty || normalized == plantName) return;
     setState(() {
       final index = plantNames.indexOf(plantName);
+      final id = plantIds.remove(plantName);
       if (index >= 0) plantNames[index] = normalized;
       final mode = plantModes.remove(plantName);
       final valve = plantValve2Modes.remove(plantName);
+      final frequency = plantFrequencies.remove(plantName);
+      final scheduleTimes = plantScheduleTimes.remove(plantName);
       if (mode != null) plantModes[normalized] = mode;
       if (valve != null) plantValve2Modes[normalized] = valve;
+      if (frequency != null) plantFrequencies[normalized] = frequency;
+      if (scheduleTimes != null) {
+        plantScheduleTimes[normalized] = scheduleTimes;
+      }
+      if (id != null) plantIds[normalized] = id;
       plantName = normalized;
     });
-    await _savePlants();
-    await _savePlantConfigurations();
+    final id = plantIds[normalized];
+    if (plantStore != null && id != null) {
+      await plantStore!.renamePlant(id, normalized);
+    } else {
+      await _savePlants();
+      await _savePlantConfigurations();
+    }
   }
 
-  void _finishPlantEdit(String name) {
-    _renameSelectedPlant(name);
+  Future<void> _finishPlantEdit(String name) async {
+    await _renameSelectedPlant(name);
     setState(() => isEditingPlant = false);
   }
 
   Future<void> _deleteSelectedPlant() async {
+    final id = plantIds[plantName];
     setState(() {
       plantNames.remove(plantName);
       plantModes.remove(plantName);
       plantValve2Modes.remove(plantName);
+      plantFrequencies.remove(plantName);
+      plantScheduleTimes.remove(plantName);
+      plantIds.remove(plantName);
       plantName = plantNames.isEmpty ? '' : plantNames.first;
       if (plantName.isNotEmpty) {
         irrigationMode = plantModes[plantName] ?? 'Inteligente';
@@ -274,8 +664,12 @@ class _MockAppShellState extends State<MockAppShell> {
       }
       selectedIndex = 0;
     });
-    await _savePlants();
-    await _savePlantConfigurations();
+    if (plantStore != null && id != null) {
+      await plantStore!.deletePlant(id);
+    } else {
+      await _savePlants();
+      await _savePlantConfigurations();
+    }
   }
 
   Future<void> _resetEspConfiguration() async {
@@ -337,17 +731,41 @@ class PlantSetupWizardScreen extends StatefulWidget {
   const PlantSetupWizardScreen({
     required this.onPlantCreated,
     required this.onConfigurationSaved,
+    required this.onFrequencySaved,
     required this.initialPlantName,
     required this.skipEspSetup,
     super.key,
   });
-  final ValueChanged<String> onPlantCreated;
-  final ValueChanged<String> onConfigurationSaved;
+  final Future<void> Function(String) onPlantCreated;
+  final ValueChanged<PlantSetupConfiguration> onConfigurationSaved;
+  final ValueChanged<String> onFrequencySaved;
   final String initialPlantName;
   final bool skipEspSetup;
 
   @override
   State<PlantSetupWizardScreen> createState() => _PlantSetupWizardScreenState();
+}
+
+class PlantSetupConfiguration {
+  const PlantSetupConfiguration({
+    required this.mode,
+    required this.valve2Mode,
+    required this.frequencyDays,
+    required this.finishMode,
+    required this.durationSeconds,
+    required this.soilTrigger,
+    required this.soilHumidityTarget,
+    required this.scheduleTimes,
+  });
+
+  final String mode;
+  final String valve2Mode;
+  final int frequencyDays;
+  final String finishMode;
+  final int durationSeconds;
+  final double soilTrigger;
+  final double soilHumidityTarget;
+  final List<ScheduleTimeInput> scheduleTimes;
 }
 
 class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
@@ -363,17 +781,25 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
   bool wifiSettingsOpened = false;
   bool espAccessPointConnected = false;
   bool wifiSaved = false;
+  bool checkingEsp32 = false;
+  bool scanningWifi = false;
+  final esp32Service = Esp32LocalService();
+  final scannedWifiNetworks = <Esp32WifiNetwork>[];
+  String esp32BaseUrl = 'http://192.168.4.1';
   String selectedWifi = 'Minha Casa 2.4G';
   double light = 60;
   int wateringFrequency = 2;
   double irrigationDuration = 30;
   double soilTrigger = 35;
+  double targetSoilMoisture = 50;
   String irrigationTarget = 'Duração';
   String valve2Mode = 'Gotejamento';
   bool isEditingIntelligent = false;
   final scheduleTimes = <String>['08:00', '18:00'];
-  final scheduleDurations = <double>[30, 45];
+  final scheduleDurations = <double>[30, 30];
+  final scheduleValves = <String>['valve_2', 'valve_2'];
   String irrigationMode = 'Inteligente';
+  int frequencyDays = 1;
   bool manualAutomaticStop = true;
   double manualDuration = 30;
   double manualSafetyTime = 120;
@@ -403,6 +829,96 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
             : popularController.text.trim())
       : popularController.text.trim();
 
+  String _validFinishMode(String value) =>
+      value == 'Duração' || value == 'Umidade' ? value : 'Duração';
+
+  PlantSetupConfiguration get configuration => PlantSetupConfiguration(
+    mode: aiSuggestionAccepted ? 'Inteligente' : irrigationMode,
+    valve2Mode: valve2Mode,
+    frequencyDays: frequencyDays,
+    finishMode: irrigationTarget,
+    durationSeconds: irrigationDuration.round(),
+    soilTrigger: soilTrigger,
+    soilHumidityTarget: targetSoilMoisture,
+    scheduleTimes: [
+      for (var index = 0; index < scheduleTimes.length; index++)
+        ScheduleTimeInput(
+          timeOfDay: scheduleTimes[index],
+          durationSeconds: scheduleDurations[index].round(),
+          valve: scheduleValves[index],
+        ),
+    ],
+  );
+
+  Future<void> _connectToEsp32() async {
+    setState(() => checkingEsp32 = true);
+    final discoveredUrl = await esp32Service.discoverByMdns();
+    if (discoveredUrl != null) esp32BaseUrl = discoveredUrl;
+    final connected = await esp32Service.isReachable(baseUrl: esp32BaseUrl);
+    if (!mounted) return;
+    setState(() {
+      checkingEsp32 = false;
+      espAccessPointConnected = connected;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          connected
+              ? 'ESP32 encontrado em $esp32BaseUrl.'
+              : 'Não foi possível encontrar o ESP32. Conecte o celular ao Wi-Fi Irrigacao_Setup_XXXX e tente novamente.',
+        ),
+      ),
+    );
+    if (connected) await _scanEsp32Networks();
+  }
+
+  Future<void> _scanEsp32Networks() async {
+    setState(() => scanningWifi = true);
+    try {
+      final networks = await esp32Service.scanNetworks(baseUrl: esp32BaseUrl);
+      if (!mounted) return;
+      setState(() {
+        scannedWifiNetworks
+          ..clear()
+          ..addAll(networks);
+        if (networks.isNotEmpty) selectedWifi = networks.first.ssid;
+        scanningWifi = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => scanningWifi = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Não foi possível buscar as redes: $error')),
+      );
+    }
+  }
+
+  Future<void> _saveEsp32Network() async {
+    if (selectedWifi.trim().isEmpty) return;
+    setState(() => scanningWifi = true);
+    try {
+      await esp32Service.configureNetwork(
+        baseUrl: esp32BaseUrl,
+        ssid: selectedWifi,
+        password: passwordController.text,
+      );
+      if (!mounted) return;
+      setState(() {
+        wifiSaved = true;
+        scanningWifi = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Rede enviada ao ESP32. Ele irá reiniciar e conectar-se à rede escolhida.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => scanningWifi = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Não foi possível configurar o ESP32: $error')),
+      );
+    }
+  }
+
   void nextStep() {
     if (step == 0 && plantName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -413,9 +929,8 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
       return;
     }
     if (widget.skipEspSetup && step == 1) {
-      widget.onConfigurationSaved(
-        aiSuggestionAccepted ? 'Inteligente' : irrigationMode,
-      );
+      widget.onConfigurationSaved(configuration);
+      widget.onFrequencySaved(frequencyDays.toString());
       widget.onPlantCreated(plantName);
     } else if (step < 2) {
       setState(() => step++);
@@ -430,9 +945,8 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
         );
         return;
       }
-      widget.onConfigurationSaved(
-        aiSuggestionAccepted ? 'Inteligente' : irrigationMode,
-      );
+      widget.onConfigurationSaved(configuration);
+      widget.onFrequencySaved(frequencyDays.toString());
       widget.onPlantCreated(plantName);
     }
   }
@@ -654,6 +1168,12 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
                 'Gotejamento por 30 segundos quando o solo estiver abaixo de 35%.',
                 style: TextStyle(color: Colors.black54),
               ),
+              const SizedBox(height: 6),
+              Text(
+                'Frequência sugerida: a cada $frequencyDays dia(s), '
+                '$wateringFrequency rega(s) por dia.',
+                style: const TextStyle(color: Colors.black54),
+              ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Aceitar recomendação'),
@@ -774,7 +1294,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
             ),
             const SizedBox(height: 14),
             DropdownButtonFormField<String>(
-              initialValue: irrigationTarget,
+              initialValue: _validFinishMode(irrigationTarget),
               decoration: const InputDecoration(
                 labelText: 'A irrigação termina por',
                 border: OutlineInputBorder(),
@@ -1065,6 +1585,8 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
   Widget _buildProgrammedEditorContent() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      _buildSetupFrequencySelector(),
+      const SizedBox(height: 12),
       Text(
         'Quantidade de vezes ao dia: ${scheduleTimes.length}',
         style: const TextStyle(fontWeight: FontWeight.w700),
@@ -1079,13 +1601,15 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
           onPressed: () => setState(() {
             scheduleTimes.add('12:00');
             scheduleDurations.add(30);
+            scheduleValves.add('valve_2');
           }),
           icon: const Icon(Icons.add),
           label: const Text('Adicionar horário'),
         ),
       const Divider(height: 24),
       DropdownButtonFormField<String>(
-        initialValue: irrigationTarget,
+        initialValue: _validFinishMode(irrigationTarget),
+        isExpanded: true,
         decoration: const InputDecoration(
           labelText: 'A irrigação termina por',
           border: OutlineInputBorder(),
@@ -1093,11 +1617,19 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
         items: const [
           DropdownMenuItem(
             value: 'Duração',
-            child: Text('Duração individual por horário'),
+            child: Text(
+              'Duração individual por horário',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
           DropdownMenuItem(
             value: 'Umidade',
-            child: Text('Até atingir a umidade do solo'),
+            child: Text(
+              'Até atingir a umidade do solo',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ],
         onChanged: (value) =>
@@ -1108,7 +1640,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Gatilho de umidade'),
+            const Text('Iniciar irrigação abaixo de'),
             Text(
               'Abaixo de ${soilTrigger.round()}%',
               style: const TextStyle(
@@ -1125,6 +1657,28 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
           divisions: 70,
           activeColor: _green,
           onChanged: (value) => setState(() => soilTrigger = value),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Finalizar ao atingir'),
+            Text(
+              '${targetSoilMoisture.round()}%',
+              style: const TextStyle(
+                color: _green,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: targetSoilMoisture,
+          min: 20,
+          max: 95,
+          divisions: 75,
+          activeColor: _green,
+          onChanged: (value) => setState(() => targetSoilMoisture = value),
         ),
       ],
     ],
@@ -1152,6 +1706,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
                 onPressed: () => setState(() {
                   scheduleTimes.removeAt(index);
                   scheduleDurations.removeAt(index);
+                  scheduleValves.removeAt(index);
                 }),
                 icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
               ),
@@ -1163,9 +1718,43 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
             onChanged: (value) =>
                 setState(() => scheduleDurations[index] = value),
           ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          initialValue: _validValve(scheduleValves[index]),
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Válvula utilizada nesta rega',
+            border: OutlineInputBorder(),
+          ),
+          items: [
+            const DropdownMenuItem(
+              value: 'valve_1',
+              child: Text(
+                'Válvula 1 — Nebulização',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            DropdownMenuItem(
+              value: 'valve_2',
+              child: Text(
+                'Válvula 2 — $valve2Mode',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() => scheduleValves[index] = value);
+          },
+        ),
       ],
     ),
   );
+
+  String _validValve(String value) =>
+      value == 'valve_1' || value == 'valve_2' ? value : 'valve_2';
 
   Future<void> _selectScheduleTime(int index) async {
     final parts = scheduleTimes[index].split(':');
@@ -1186,6 +1775,15 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
   Widget _buildIntelligentEditorContent() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      _buildSetupFrequencySelector(),
+      const SizedBox(height: 12),
+      _buildSetupDailyWateringsSelector(),
+      const SizedBox(height: 10),
+      ...List.generate(
+        scheduleTimes.length,
+        (index) => _buildScheduleRow(index),
+      ),
+      const SizedBox(height: 14),
       const Text(
         'A IA sugeriu irrigação por gotejamento.',
         style: TextStyle(fontWeight: FontWeight.w700),
@@ -1197,7 +1795,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
       ),
       const SizedBox(height: 16),
       DropdownButtonFormField<String>(
-        initialValue: irrigationTarget,
+        initialValue: _validFinishMode(irrigationTarget),
         decoration: const InputDecoration(
           labelText: 'Finalizar irrigação por',
           border: OutlineInputBorder(),
@@ -1233,7 +1831,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Gatilho sugerido'),
+            const Text('Iniciar irrigação abaixo de'),
             Text(
               'Abaixo de ${soilTrigger.round()}%',
               style: const TextStyle(
@@ -1252,8 +1850,87 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
           activeColor: _green,
           onChanged: (value) => setState(() => soilTrigger = value),
         ),
+      if (irrigationTarget == 'Umidade') ...[
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Finalizar ao atingir'),
+            Text(
+              '${targetSoilMoisture.round()}%',
+              style: const TextStyle(
+                color: _green,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: targetSoilMoisture,
+          min: 20,
+          max: 95,
+          divisions: 75,
+          activeColor: _green,
+          onChanged: (value) => setState(() => targetSoilMoisture = value),
+        ),
+      ],
     ],
   );
+
+  Widget _buildSetupFrequencySelector() => TextFormField(
+    keyboardType: TextInputType.number,
+    initialValue: frequencyDays.toString(),
+    decoration: const InputDecoration(
+      labelText: 'Intervalo entre regas',
+      prefixText: 'A cada ',
+      suffixText: ' dia(s)',
+      border: OutlineInputBorder(),
+    ),
+    onChanged: (value) {
+      final parsed = int.tryParse(value);
+      if (parsed != null) {
+        setState(() => frequencyDays = parsed.clamp(1, 30));
+      }
+    },
+  );
+
+  Widget _buildSetupDailyWateringsSelector() => Row(
+    children: [
+      Expanded(
+        child: Text(
+          'Regas por dia: $wateringFrequency',
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+      IconButton(
+        onPressed: wateringFrequency <= 1
+            ? null
+            : () => _changeSetupWateringCount(wateringFrequency - 1),
+        icon: const Icon(Icons.remove_circle_outline),
+      ),
+      IconButton(
+        onPressed: wateringFrequency >= 6
+            ? null
+            : () => _changeSetupWateringCount(wateringFrequency + 1),
+        icon: const Icon(Icons.add_circle_outline),
+      ),
+    ],
+  );
+
+  void _changeSetupWateringCount(int count) {
+    setState(() {
+      wateringFrequency = count.clamp(1, 6);
+      while (scheduleTimes.length < wateringFrequency) {
+        scheduleTimes.add('12:00');
+        scheduleDurations.add(30);
+        scheduleValves.add('valve_2');
+      }
+      while (scheduleTimes.length > wateringFrequency) {
+        scheduleTimes.removeLast();
+        scheduleDurations.removeLast();
+        scheduleValves.removeLast();
+      }
+    });
+  }
 
   Widget _buildEspSetupV2() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1308,15 +1985,19 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: wifiSettingsOpened
-                  ? () => setState(() => espAccessPointConnected = true)
+                  ? (checkingEsp32 ? null : _connectToEsp32)
                   : null,
               icon: Icon(
-                espAccessPointConnected
+                checkingEsp32
+                    ? Icons.sync
+                    : espAccessPointConnected
                     ? Icons.check_circle
                     : Icons.link_rounded,
               ),
               label: Text(
-                espAccessPointConnected
+                checkingEsp32
+                    ? 'Procurando ESP32...'
+                    : espAccessPointConnected
                     ? 'ESP32 conectado'
                     : 'Confirmar conexão com o ESP32',
               ),
@@ -1337,24 +2018,33 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
                   labelText: 'Rede Wi-Fi do ESP32',
                   border: OutlineInputBorder(),
                 ),
-                items: const [
-                  DropdownMenuItem(
-                    value: 'Minha Casa 2.4G',
-                    child: Text('Minha Casa 2.4G'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'Casa da Horta',
-                    child: Text('Casa da Horta'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'Outra rede encontrada',
-                    child: Text('Outra rede encontrada'),
-                  ),
-                ],
+                items: scannedWifiNetworks.isEmpty
+                    ? const [
+                        DropdownMenuItem(
+                          value: 'Minha Casa 2.4G',
+                          child: Text('Busque as redes disponíveis'),
+                        ),
+                      ]
+                    : [
+                        for (final network in scannedWifiNetworks)
+                          DropdownMenuItem(
+                            value: network.ssid,
+                            child: Text(network.ssid),
+                          ),
+                      ],
                 onChanged: (value) => setState(() {
                   selectedWifi = value ?? selectedWifi;
                   wifiSaved = false;
                 }),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: scanningWifi ? null : _scanEsp32Networks,
+                  icon: const Icon(Icons.refresh),
+                  label: Text(scanningWifi ? 'Buscando redes...' : 'Buscar redes próximas'),
+                ),
               ),
               const SizedBox(height: 14),
               _TextField(
@@ -1366,7 +2056,7 @@ class _PlantSetupWizardScreenState extends State<PlantSetupWizardScreen> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: OutlinedButton.icon(
-                  onPressed: () => setState(() => wifiSaved = true),
+                  onPressed: scanningWifi ? null : _saveEsp32Network,
                   icon: Icon(wifiSaved ? Icons.check : Icons.save_outlined),
                   label: Text(
                     wifiSaved ? 'Configuração salva' : 'Salvar rede no ESP32',
@@ -1771,10 +2461,13 @@ class HomeMockScreen extends StatelessWidget {
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const Icon(
-                    Icons.notifications_none_rounded,
-                    color: Colors.white,
-                    size: 30,
+                  IconButton(
+                    onPressed: () => showNotificationDrawer(context),
+                    icon: const Icon(
+                      Icons.notifications_none_rounded,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                   ),
                 ],
               ),
@@ -2021,14 +2714,14 @@ class MockBottomNavigation extends StatelessWidget {
         label: 'Controle',
       ),
       NavigationDestination(
-        icon: Icon(Icons.local_florist_outlined, color: Colors.white),
-        selectedIcon: Icon(Icons.local_florist, color: Colors.white),
-        label: 'Planta',
-      ),
-      NavigationDestination(
         icon: Icon(Icons.history_outlined, color: Colors.white),
         selectedIcon: Icon(Icons.history, color: Colors.white),
         label: 'Histórico',
+      ),
+      NavigationDestination(
+        icon: Icon(Icons.settings_outlined, color: Colors.white),
+        selectedIcon: Icon(Icons.settings, color: Colors.white),
+        label: 'Config',
       ),
     ],
   );
@@ -2077,10 +2770,13 @@ class HomeDashboardScreen extends StatelessWidget {
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const Icon(
-                    Icons.notifications_none_rounded,
-                    color: Colors.white,
-                    size: 30,
+                  IconButton(
+                    onPressed: () => showNotificationDrawer(context),
+                    icon: const Icon(
+                      Icons.notifications_none_rounded,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                   ),
                 ],
               ),
@@ -2329,10 +3025,13 @@ class HomeDashboardScreenV2 extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Icon(
-                    Icons.notifications_none_rounded,
-                    color: Colors.white,
-                    size: 30,
+                  IconButton(
+                    onPressed: () => showNotificationDrawer(context),
+                    icon: const Icon(
+                      Icons.notifications_none_rounded,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                   ),
                 ],
               ),
@@ -2560,7 +3259,13 @@ class _ControlPlantHeader extends StatelessWidget {
                 ),
               ),
             ),
-            const Icon(Icons.notifications_none_rounded, color: Colors.white),
+            IconButton(
+              onPressed: () => showNotificationDrawer(context),
+              icon: const Icon(
+                Icons.notifications_none_rounded,
+                color: Colors.white,
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -2625,26 +3330,56 @@ class IrrigationControlMockScreen extends StatefulWidget {
     required this.plants,
     required this.initialMode,
     required this.initialValve2Mode,
+    required this.initialFrequency,
+    required this.initialScheduleTimes,
     required this.onPlantSelected,
     required this.onEditName,
     required this.onAddPlant,
     required this.onModeChanged,
     required this.onValve2Changed,
+    required this.onFrequencyChanged,
+    required this.onSave,
     super.key,
   });
   final String plantName;
   final List<String> plants;
   final String initialMode;
   final String initialValve2Mode;
+  final String initialFrequency;
+  final List<ScheduleTimeInput> initialScheduleTimes;
   final ValueChanged<String> onPlantSelected;
   final VoidCallback onEditName;
   final VoidCallback onAddPlant;
   final ValueChanged<String> onModeChanged;
   final ValueChanged<String> onValve2Changed;
+  final ValueChanged<String> onFrequencyChanged;
+  final ValueChanged<IrrigationControlConfiguration> onSave;
 
   @override
   State<IrrigationControlMockScreen> createState() =>
       _IrrigationControlMockScreenState();
+}
+
+class IrrigationControlConfiguration {
+  const IrrigationControlConfiguration({
+    required this.mode,
+    required this.valve2Mode,
+    required this.frequencyDays,
+    required this.finishMode,
+    required this.durationSeconds,
+    required this.soilTrigger,
+    required this.soilHumidityTarget,
+    required this.scheduleTimes,
+  });
+
+  final String mode;
+  final String valve2Mode;
+  final int frequencyDays;
+  final String finishMode;
+  final int durationSeconds;
+  final double soilTrigger;
+  final double soilHumidityTarget;
+  final List<ScheduleTimeInput> scheduleTimes;
 }
 
 class _ManualHomeControls extends StatelessWidget {
@@ -2656,22 +3391,19 @@ class _ManualHomeControls extends StatelessWidget {
   final ValueChanged<String> onValve2Changed;
 
   @override
-  Widget build(BuildContext context) => Row(
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      Expanded(
-        child: FilledButton.icon(
-          onPressed: null,
-          icon: const Icon(Icons.water_drop_outlined),
-          label: const Text('Nebulização'),
-        ),
+      FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.water_drop_outlined),
+        label: const Text('Nebulização', overflow: TextOverflow.ellipsis),
       ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: FilledButton.icon(
-          onPressed: null,
-          icon: const Icon(Icons.water_drop_outlined),
-          label: Text(valve2Mode),
-        ),
+      const SizedBox(height: 10),
+      FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.water_drop_outlined),
+        label: Text(valve2Mode, overflow: TextOverflow.ellipsis),
       ),
     ],
   );
@@ -2788,37 +3520,115 @@ class _ValveControlCard extends StatelessWidget {
 }
 
 class _IrrigationControlMockScreenState
-    extends State<IrrigationControlMockScreen> {
+    extends State<IrrigationControlMockScreen>
+    with SingleTickerProviderStateMixin {
   late String mode;
   String target = 'Duração';
+  int frequencyDays = 1;
   double duration = 30;
   double moisture = 35;
+  double targetMoisture = 50;
   bool manualAutomaticStop = true;
   double manualDuration = 30;
   double manualSafetyTime = 120;
   String valve2Mode = 'Gotejamento';
   final times = <String>['08:00', '18:00'];
+  final timeDurations = <double>[30, 30];
+  final timeValves = <String>['valve_2', 'valve_2'];
   bool isEditingIntelligent = false;
+  bool hasUnsavedChanges = false;
+  late final AnimationController savePulseController;
+
+  String _validValve(String value) =>
+      value == 'valve_1' || value == 'valve_2' ? value : 'valve_2';
 
   @override
   void initState() {
     super.initState();
+    savePulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    );
     mode = widget.initialMode;
     valve2Mode = widget.initialValve2Mode;
+    frequencyDays = int.tryParse(widget.initialFrequency) ?? 1;
+    _loadScheduleTimes(widget.initialScheduleTimes);
+  }
+
+  void _loadScheduleTimes(List<ScheduleTimeInput> configured) {
+    if (configured.isEmpty) return;
+    times
+      ..clear()
+      ..addAll(configured.map((item) => item.timeOfDay));
+    timeDurations
+      ..clear()
+      ..addAll(
+        configured.map((item) => (item.durationSeconds ?? 30).toDouble()),
+      );
+    timeValves
+      ..clear()
+      ..addAll(configured.map((item) => _validValve(item.valve)));
   }
 
   void changeMode(String value) {
     setState(() => mode = value);
-    widget.onModeChanged(value);
+    markChanged();
+  }
+
+  void markChanged() {
+    if (hasUnsavedChanges) return;
+    setState(() => hasUnsavedChanges = true);
+    savePulseController.repeat(reverse: true);
+  }
+
+  void saveChanges() {
+    widget.onModeChanged(mode);
+    widget.onValve2Changed(valve2Mode);
+    widget.onFrequencyChanged(frequencyDays.toString());
+    setState(() => hasUnsavedChanges = false);
+    savePulseController.stop();
+    savePulseController.reset();
+    widget.onSave(
+      IrrigationControlConfiguration(
+        mode: mode,
+        valve2Mode: valve2Mode,
+        frequencyDays: frequencyDays,
+        finishMode: target,
+        durationSeconds: duration.round(),
+        soilTrigger: moisture,
+        soilHumidityTarget: targetMoisture,
+        scheduleTimes: [
+          for (var index = 0; index < times.length; index++)
+            ScheduleTimeInput(
+              timeOfDay: times[index],
+              durationSeconds: timeDurations[index].round(),
+              valve: timeValves[index],
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    savePulseController.dispose();
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant IrrigationControlMockScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initialMode != widget.initialMode ||
-        oldWidget.initialValve2Mode != widget.initialValve2Mode) {
+        oldWidget.initialValve2Mode != widget.initialValve2Mode ||
+        oldWidget.initialFrequency != widget.initialFrequency ||
+        oldWidget.initialScheduleTimes != widget.initialScheduleTimes) {
       mode = widget.initialMode;
       valve2Mode = widget.initialValve2Mode;
+      frequencyDays = int.tryParse(widget.initialFrequency) ?? 1;
+      _loadScheduleTimes(widget.initialScheduleTimes);
+      hasUnsavedChanges = false;
+      savePulseController.stop();
+      savePulseController.reset();
       isEditingIntelligent = false;
     }
   }
@@ -2879,6 +3689,24 @@ class _IrrigationControlMockScreenState
               if (mode == 'Manual') _buildManualControlV2(),
               if (mode == 'Programado') _buildProgrammedControlV3(),
               if (mode == 'Inteligente') _buildIntelligentControlV4(),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: AnimatedBuilder(
+                  animation: savePulseController,
+                  builder: (context, child) => Transform.scale(
+                    scale: hasUnsavedChanges
+                        ? 1 + savePulseController.value * .035
+                        : 1,
+                    child: child,
+                  ),
+                  child: FilledButton.icon(
+                    onPressed: hasUnsavedChanges ? saveChanges : null,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Salvar alterações'),
+                  ),
+                ),
+              ),
             ],
           ),
         ),
@@ -2896,7 +3724,7 @@ class _IrrigationControlMockScreenState
           valve2Mode: valve2Mode,
           onValve2Changed: (value) {
             setState(() => valve2Mode = value);
-            widget.onValve2Changed(value);
+            markChanged();
           },
         ),
         const SizedBox(height: 12),
@@ -2907,22 +3735,19 @@ class _IrrigationControlMockScreenState
           style: TextStyle(color: Colors.black54),
         ),
         const SizedBox(height: 14),
-        Row(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.water_drop),
-                label: const Text('Nebulização'),
-              ),
+            FilledButton.icon(
+              onPressed: null,
+              icon: const Icon(Icons.water_drop),
+              label: const Text('Nebulização', overflow: TextOverflow.ellipsis),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.water_drop),
-                label: Text(valve2Mode),
-              ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: null,
+              icon: const Icon(Icons.water_drop),
+              label: Text(valve2Mode, overflow: TextOverflow.ellipsis),
             ),
           ],
         ),
@@ -2974,6 +3799,24 @@ class _IrrigationControlMockScreenState
     ],
   );
 
+  Widget _buildFrequencySelector() => TextFormField(
+    keyboardType: TextInputType.number,
+    initialValue: frequencyDays.toString(),
+    decoration: const InputDecoration(
+      labelText: 'Intervalo entre regas',
+      prefixText: 'A cada ',
+      suffixText: ' dia(s)',
+      border: OutlineInputBorder(),
+    ),
+    onChanged: (value) {
+      final parsed = int.tryParse(value);
+      if (parsed != null) {
+        setState(() => frequencyDays = parsed.clamp(1, 30));
+        markChanged();
+      }
+    },
+  );
+
   // Versão anterior mantida como referência visual.
   // ignore: unused_element
   Widget _buildManualControl() => _WizardCard(
@@ -3023,6 +3866,75 @@ class _IrrigationControlMockScreenState
     ),
   );
 
+  Widget _buildControlTimeRow(int index) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Text('Horário ${index + 1}'),
+          const Spacer(),
+          OutlinedButton.icon(
+            onPressed: () => _selectControlTime(index),
+            icon: const Icon(Icons.access_time, size: 18),
+            label: Text(times[index]),
+          ),
+          if (times.length > 1)
+            IconButton(
+              onPressed: () {
+                setState(() {
+                  times.removeAt(index);
+                  timeDurations.removeAt(index);
+                  timeValves.removeAt(index);
+                });
+                markChanged();
+              },
+              icon: const Icon(Icons.delete_outline),
+            ),
+        ],
+      ),
+      if (target == 'Duração')
+        _NumericDurationField(
+          value: timeDurations[index],
+          onChanged: (value) {
+            setState(() => timeDurations[index] = value);
+            markChanged();
+          },
+        ),
+      const SizedBox(height: 8),
+      DropdownButtonFormField<String>(
+        initialValue: _validValve(timeValves[index]),
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Válvula utilizada nesta rega',
+          border: OutlineInputBorder(),
+        ),
+        items: [
+          const DropdownMenuItem(
+            value: 'valve_1',
+            child: Text(
+              'Válvula 1 — Nebulização',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          DropdownMenuItem(
+            value: 'valve_2',
+            child: Text(
+              'Válvula 2 — $valve2Mode',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+        onChanged: (value) {
+          if (value == null) return;
+          setState(() => timeValves[index] = value);
+          markChanged();
+        },
+      ),
+    ],
+  );
+
   Widget _buildProgrammedControlV3() => _WizardCard(
     icon: Icons.schedule_rounded,
     title: 'Programação de regas',
@@ -3034,6 +3946,8 @@ class _IrrigationControlMockScreenState
           onEdit: _editIntelligentValve2,
         ),
         const SizedBox(height: 14),
+        _buildFrequencySelector(),
+        const SizedBox(height: 12),
         Row(
           children: [
             const Text(
@@ -3044,7 +3958,14 @@ class _IrrigationControlMockScreenState
             IconButton(
               onPressed: times.length <= 1
                   ? null
-                  : () => setState(() => times.removeLast()),
+                  : () {
+                      setState(() {
+                        times.removeLast();
+                        timeDurations.removeLast();
+                        timeValves.removeLast();
+                      });
+                      markChanged();
+                    },
               icon: const Icon(Icons.remove_circle_outline),
             ),
             Text(
@@ -3057,30 +3978,19 @@ class _IrrigationControlMockScreenState
             IconButton(
               onPressed: times.length >= 6
                   ? null
-                  : () => setState(() => times.add('12:00')),
+                  : () {
+                      setState(() {
+                        times.add('12:00');
+                        timeDurations.add(30);
+                        timeValves.add('valve_2');
+                      });
+                      markChanged();
+                    },
               icon: const Icon(Icons.add_circle_outline),
             ),
           ],
         ),
-        ...List.generate(
-          times.length,
-          (index) => Row(
-            children: [
-              Text('Horário ${index + 1}'),
-              const Spacer(),
-              OutlinedButton.icon(
-                onPressed: () => _selectControlTime(index),
-                icon: const Icon(Icons.access_time, size: 18),
-                label: Text(times[index]),
-              ),
-              if (times.length > 1)
-                IconButton(
-                  onPressed: () => setState(() => times.removeAt(index)),
-                  icon: const Icon(Icons.delete_outline),
-                ),
-            ],
-          ),
-        ),
+        ...List.generate(times.length, (index) => _buildControlTimeRow(index)),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
           initialValue: target,
@@ -3092,19 +4002,17 @@ class _IrrigationControlMockScreenState
             DropdownMenuItem(value: 'Duração', child: Text('Duração')),
             DropdownMenuItem(value: 'Umidade', child: Text('Umidade do solo')),
           ],
-          onChanged: (value) => setState(() => target = value ?? target),
+          onChanged: (value) {
+            setState(() => target = value ?? target);
+            markChanged();
+          },
         ),
         const SizedBox(height: 12),
-        if (target == 'Duração')
-          _NumericDurationField(
-            value: duration,
-            onChanged: (value) => setState(() => duration = value),
-          ),
         if (target == 'Umidade') ...[
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Gatilho de umidade'),
+              const Text('Iniciar irrigação abaixo de'),
               Text(
                 '${moisture.round()}%',
                 style: const TextStyle(
@@ -3120,7 +4028,34 @@ class _IrrigationControlMockScreenState
             max: 80,
             divisions: 70,
             activeColor: _green,
-            onChanged: (value) => setState(() => moisture = value),
+            onChanged: (value) {
+              setState(() => moisture = value);
+              markChanged();
+            },
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Finalizar ao atingir'),
+              Text(
+                '${targetMoisture.round()}%',
+                style: const TextStyle(
+                  color: _green,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            value: targetMoisture,
+            min: 20,
+            max: 95,
+            divisions: 75,
+            activeColor: _green,
+            onChanged: (value) {
+              setState(() => targetMoisture = value);
+              markChanged();
+            },
           ),
         ],
       ],
@@ -3429,6 +4364,8 @@ class _IrrigationControlMockScreenState
   Widget _buildIntelligentFieldsCleanV2() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      _buildFrequencySelector(),
+      const SizedBox(height: 12),
       Row(
         children: [
           const Text(
@@ -3439,7 +4376,11 @@ class _IrrigationControlMockScreenState
           IconButton(
             onPressed: times.length <= 1
                 ? null
-                : () => setState(() => times.removeLast()),
+                : () => setState(() {
+                    times.removeLast();
+                    timeDurations.removeLast();
+                    timeValves.removeLast();
+                  }),
             icon: const Icon(Icons.remove_circle_outline),
           ),
           Text(
@@ -3449,25 +4390,16 @@ class _IrrigationControlMockScreenState
           IconButton(
             onPressed: times.length >= 6
                 ? null
-                : () => setState(() => times.add('12:00')),
+                : () => setState(() {
+                    times.add('12:00');
+                    timeDurations.add(30);
+                    timeValves.add('valve_2');
+                  }),
             icon: const Icon(Icons.add_circle_outline),
           ),
         ],
       ),
-      ...List.generate(
-        times.length,
-        (index) => Row(
-          children: [
-            Text('Horário ${index + 1}'),
-            const Spacer(),
-            OutlinedButton.icon(
-              onPressed: () => _selectControlTime(index),
-              icon: const Icon(Icons.access_time, size: 18),
-              label: Text(times[index]),
-            ),
-          ],
-        ),
-      ),
+      ...List.generate(times.length, (index) => _buildControlTimeRow(index)),
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         initialValue: target,
@@ -3479,19 +4411,17 @@ class _IrrigationControlMockScreenState
           DropdownMenuItem(value: 'Duração', child: Text('Duração')),
           DropdownMenuItem(value: 'Umidade', child: Text('Umidade do solo')),
         ],
-        onChanged: (value) => setState(() => target = value ?? target),
+        onChanged: (value) {
+          setState(() => target = value ?? target);
+          markChanged();
+        },
       ),
       const SizedBox(height: 12),
-      if (target == 'Duração')
-        _NumericDurationField(
-          value: duration,
-          onChanged: (value) => setState(() => duration = value),
-        ),
       if (target == 'Umidade') ...[
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('Gatilho de umidade'),
+            const Text('Iniciar irrigação abaixo de'),
             Text(
               '${moisture.round()}%',
               style: const TextStyle(
@@ -3507,7 +4437,34 @@ class _IrrigationControlMockScreenState
           max: 80,
           divisions: 70,
           activeColor: _green,
-          onChanged: (value) => setState(() => moisture = value),
+          onChanged: (value) {
+            setState(() => moisture = value);
+            markChanged();
+          },
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Finalizar ao atingir'),
+            Text(
+              '${targetMoisture.round()}%',
+              style: const TextStyle(
+                color: _green,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: targetMoisture,
+          min: 20,
+          max: 95,
+          divisions: 75,
+          activeColor: _green,
+          onChanged: (value) {
+            setState(() => targetMoisture = value);
+            markChanged();
+          },
         ),
       ],
     ],
@@ -3718,7 +4675,7 @@ class _IrrigationControlMockScreenState
     );
     if (selected == null) return;
     setState(() => valve2Mode = selected);
-    widget.onValve2Changed(selected);
+    markChanged();
   }
 
   Widget _buildIntelligentFields() => Column(
@@ -3858,6 +4815,7 @@ class _IrrigationControlMockScreenState
       () => times[index] =
           '${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}',
     );
+    markChanged();
   }
 
   // Mantido como referência da primeira versão visual.
@@ -3927,6 +4885,10 @@ class IrrigationMockScreen extends StatelessWidget {
 class PlantInfoMockScreen extends StatefulWidget {
   const PlantInfoMockScreen({
     required this.plantName,
+    required this.irrigationMode,
+    this.plantId,
+    this.notificationStore,
+    this.onSignOut,
     required this.onEdit,
     required this.onRename,
     required this.onDelete,
@@ -3934,6 +4896,10 @@ class PlantInfoMockScreen extends StatefulWidget {
     super.key,
   });
   final String plantName;
+  final String irrigationMode;
+  final String? plantId;
+  final SupabaseNotificationStore? notificationStore;
+  final Future<void> Function()? onSignOut;
   final VoidCallback onEdit;
   final ValueChanged<String> onRename;
   final Future<void> Function() onDelete;
@@ -3944,17 +4910,116 @@ class PlantInfoMockScreen extends StatefulWidget {
 }
 
 class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
+  static const _drySoilNotificationKey = 'Solo seco — hora de regar';
+  static const _dryAirNotificationKey = 'Sugestão de nebulização';
   final notificationSettings = <String, bool>{
-    'Irrigação realizada': true,
+    '\u0049rriga\u00e7\u00e3o realizada': true,
     'Luminosidade excedente': true,
-    'Estresse térmico': true,
-    'Solo seco — hora de regar': true,
-    'Sugestão de nebulização': false,
-    'Confirmação de fim de rega manual': true,
-    'Trava de segurança (watchdog)': true,
+    'Estresse t\u00e9rmico': true,
+    'Solo seco \u2014 hora de regar': true,
+    'Sugest\u00e3o de nebuliza\u00e7\u00e3o': false,
+    'Confirma\u00e7\u00e3o de fim de rega manual': true,
+    'Trava de seguran\u00e7a (watchdog)': true,
   };
   double lightLimit = 80;
   double thermalLimit = 30;
+  double drySoilLimit = 35;
+  double dryAirLimit = 35;
+
+  bool get isManualMode => widget.irrigationMode == 'Manual';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNotificationPreferences();
+  }
+
+  Future<void> _loadNotificationPreferences() async {
+    if (widget.plantId == null || widget.notificationStore == null) return;
+    final preferences = await widget.notificationStore!.load(widget.plantId!);
+    if (!mounted) return;
+    setState(() {
+      notificationSettings['IrrigaÃ§Ã£o realizada'] =
+          preferences.irrigationCompleted;
+      notificationSettings['Luminosidade excedente'] =
+          preferences.excessiveLight;
+      notificationSettings['Estresse tÃ©rmico'] = preferences.thermalStress;
+      notificationSettings['Solo seco â€” hora de regar'] = preferences.drySoil;
+      notificationSettings['SugestÃ£o de nebulizaÃ§Ã£o'] = preferences.dryAir;
+      notificationSettings['ConfirmaÃ§Ã£o de fim de rega manual'] =
+          preferences.manualCompleted;
+      notificationSettings['Trava de seguranÃ§a (watchdog)'] =
+          preferences.safetyWatchdog;
+      lightLimit = preferences.excessiveLightLimit;
+      thermalLimit = preferences.thermalMax;
+      drySoilLimit = preferences.drySoilLimit;
+      dryAirLimit = preferences.dryAirLimit;
+      // Remove entradas antigas geradas por uma versão com codificação
+      // incorreta. As chaves originais da lista permanecem intactas.
+      notificationSettings.removeWhere((key, _) => key.contains('\u00c3'));
+      final keys = notificationSettings.keys.toList();
+      notificationSettings[keys[0]] = preferences.irrigationCompleted;
+      notificationSettings[keys[1]] = preferences.excessiveLight;
+      notificationSettings[keys[2]] = preferences.thermalStress;
+      notificationSettings[keys[3]] = preferences.drySoil;
+      notificationSettings[keys[4]] = preferences.dryAir;
+      notificationSettings[keys[5]] = preferences.manualCompleted;
+      notificationSettings[keys[6]] = preferences.safetyWatchdog;
+      if (!isManualMode) {
+        notificationSettings[_drySoilNotificationKey] = false;
+        notificationSettings[_dryAirNotificationKey] = false;
+      }
+    });
+  }
+
+  // ignore: unused_element
+  Future<void> _saveNotificationPreferences() async {
+    if (widget.plantId == null || widget.notificationStore == null) return;
+    await widget.notificationStore!.save(
+      widget.plantId!,
+      PlantNotificationPreferences(
+        irrigationCompleted:
+            notificationSettings['IrrigaÃ§Ã£o realizada'] ?? true,
+        excessiveLight: notificationSettings['Luminosidade excedente'] ?? true,
+        excessiveLightLimit: lightLimit,
+        thermalStress: notificationSettings['Estresse tÃ©rmico'] ?? true,
+        thermalMax: thermalLimit,
+        drySoil:
+            isManualMode &&
+            (notificationSettings[_drySoilNotificationKey] ?? true),
+        drySoilLimit: drySoilLimit,
+        dryAir:
+            isManualMode &&
+            (notificationSettings[_dryAirNotificationKey] ?? false),
+        dryAirLimit: dryAirLimit,
+        manualCompleted:
+            notificationSettings['ConfirmaÃ§Ã£o de fim de rega manual'] ?? true,
+        safetyWatchdog:
+            notificationSettings['Trava de seguranÃ§a (watchdog)'] ?? true,
+      ),
+    );
+  }
+
+  Future<void> _persistNotificationSettings() async {
+    if (widget.plantId == null || widget.notificationStore == null) return;
+    final values = notificationSettings.values.toList();
+    await widget.notificationStore!.save(
+      widget.plantId!,
+      PlantNotificationPreferences(
+        irrigationCompleted: values.elementAt(0),
+        excessiveLight: values.elementAt(1),
+        excessiveLightLimit: lightLimit,
+        thermalStress: values.elementAt(2),
+        thermalMax: thermalLimit,
+        drySoil: isManualMode && values.elementAt(3),
+        drySoilLimit: drySoilLimit,
+        dryAir: isManualMode && values.elementAt(4),
+        dryAirLimit: dryAirLimit,
+        manualCompleted: values.elementAt(5),
+        safetyWatchdog: values.elementAt(6),
+      ),
+    );
+  }
 
   // Mantido para futuras edições rápidas diretamente nesta tela.
   // ignore: unused_element
@@ -4056,6 +5121,36 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
     if (confirmed == true) await widget.onDelete();
   }
 
+  Future<void> _confirmSignOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sair da conta?'),
+        content: const Text(
+          'Você precisará entrar novamente para acessar suas plantas.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sair'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (widget.onSignOut != null) {
+      await widget.onSignOut!.call();
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nenhuma sessão autenticada está ativa.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
     padding: const EdgeInsets.fromLTRB(20, 24, 20, 30),
@@ -4116,17 +5211,96 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
                 (label) => SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text(label),
-                  value: notificationSettings[label]!,
-                  onChanged: (value) =>
-                      setState(() => notificationSettings[label] = value),
+                  subtitle:
+                      (label == _drySoilNotificationKey ||
+                              label == _dryAirNotificationKey) &&
+                          !isManualMode
+                      ? const Text('Disponível somente no modo manual')
+                      : null,
+                  value:
+                      (label == _drySoilNotificationKey ||
+                          label == _dryAirNotificationKey)
+                      ? isManualMode && notificationSettings[label]!
+                      : notificationSettings[label]!,
+                  onChanged:
+                      (label == _drySoilNotificationKey ||
+                              label == _dryAirNotificationKey) &&
+                          !isManualMode
+                      ? null
+                      : (value) {
+                          setState(() => notificationSettings[label] = value);
+                          _persistNotificationSettings();
+                        },
                 ),
               ),
-              if (notificationSettings['Estresse térmico'] == true) ...[
+              if (isManualMode &&
+                  notificationSettings[_drySoilNotificationKey] == true) ...[
                 const Divider(),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Alertar acima de'),
+                    const Expanded(
+                      child: Text(
+                        'Alertar umidade abaixo de',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Text('${drySoilLimit.round()}%'),
+                  ],
+                ),
+                Slider(
+                  value: drySoilLimit,
+                  min: 10,
+                  max: 80,
+                  divisions: 70,
+                  activeColor: _green,
+                  onChanged: (value) {
+                    setState(() => drySoilLimit = value);
+                    _persistNotificationSettings();
+                  },
+                ),
+              ],
+              if (isManualMode &&
+                  notificationSettings[_dryAirNotificationKey] == true) ...[
+                const Divider(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Alertar umidade do ar abaixo de',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Text('${dryAirLimit.round()}%'),
+                  ],
+                ),
+                Slider(
+                  value: dryAirLimit,
+                  min: 10,
+                  max: 90,
+                  divisions: 80,
+                  activeColor: _green,
+                  onChanged: (value) {
+                    setState(() => dryAirLimit = value);
+                    _persistNotificationSettings();
+                  },
+                ),
+              ],
+              if (notificationSettings['Estresse t\u00e9rmico'] == true) ...[
+                const Divider(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Limite de temperatura',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     Text('${thermalLimit.round()} °C'),
                   ],
                 ),
@@ -4136,7 +5310,10 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
                   max: 45,
                   divisions: 25,
                   activeColor: _green,
-                  onChanged: (value) => setState(() => thermalLimit = value),
+                  onChanged: (value) {
+                    setState(() => thermalLimit = value);
+                    _persistNotificationSettings();
+                  },
                 ),
               ],
               if (notificationSettings['Luminosidade excedente'] == true) ...[
@@ -4144,7 +5321,13 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Limite máximo de luminosidade'),
+                    const Expanded(
+                      child: Text(
+                        'Limite máximo de luminosidade',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     Text('${lightLimit.round()}%'),
                   ],
                 ),
@@ -4154,7 +5337,10 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
                   max: 100,
                   divisions: 50,
                   activeColor: _green,
-                  onChanged: (value) => setState(() => lightLimit = value),
+                  onChanged: (value) {
+                    setState(() => lightLimit = value);
+                    _persistNotificationSettings();
+                  },
                 ),
               ],
             ],
@@ -4179,6 +5365,16 @@ class _PlantInfoMockScreenState extends State<PlantInfoMockScreen> {
             label: const Text('Excluir planta'),
           ),
         ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _confirmSignOut,
+            style: OutlinedButton.styleFrom(foregroundColor: Colors.black54),
+            icon: const Icon(Icons.logout),
+            label: const Text('Sair'),
+          ),
+        ),
       ],
     ),
   );
@@ -4188,12 +5384,16 @@ class HistoryMockScreen extends StatelessWidget {
   HistoryMockScreen({
     required this.plantName,
     required this.plants,
+    this.plantId,
+    this.historyStore,
     required this.onPlantSelected,
     required this.onAddPlant,
     super.key,
   });
   final String plantName;
   final List<String> plants;
+  final String? plantId;
+  final SupabaseHistoryStore? historyStore;
   final ValueChanged<String> onPlantSelected;
   final VoidCallback onAddPlant;
   final selectedPeriod = ValueNotifier<String>('7 dias');
@@ -4214,8 +5414,6 @@ class HistoryMockScreen extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.arrow_back, color: Colors.white, size: 28),
-                  const SizedBox(width: 18),
                   Text(
                     'Histórico e sensores',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -4272,9 +5470,16 @@ class HistoryMockScreen extends StatelessWidget {
             children: [
               _buildPeriodSelector(),
               const SizedBox(height: 12),
-              _buildSensorChart(),
-              const SizedBox(height: 12),
-              _buildIrrigationEvents(),
+              ValueListenableBuilder<String>(
+                valueListenable: selectedPeriod,
+                builder: (context, period, _) => Column(
+                  children: [
+                    _buildSensorChart(period),
+                    const SizedBox(height: 12),
+                    _buildIrrigationEvents(period),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -4327,7 +5532,43 @@ class HistoryMockScreen extends StatelessWidget {
     ),
   );
 
-  Widget _buildSensorChart() => Container(
+  Widget _buildSensorChart([String period = '7 dias']) {
+    if (historyStore == null || plantId == null) {
+      return _buildMockSensorChart();
+    }
+    return FutureBuilder<List<SensorReadingRecord>>(
+      future: historyStore!.listReadings(
+        plantId: plantId!,
+        from: DateTime.now().subtract(Duration(days: _periodDays(period))),
+      ),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _historyLoadingCard('Carregando leituras...');
+        }
+        if (snapshot.hasError) {
+          return _historyLoadingCard('Não foi possível carregar as leituras.');
+        }
+        final readings = snapshot.data ?? const <SensorReadingRecord>[];
+        if (readings.isEmpty) {
+          return _historyLoadingCard(
+            'Nenhuma leitura real foi enviada pelo ESP32 ainda.',
+          );
+        }
+        final latest = readings.last;
+        return _historyDataCard(
+          title: '${readings.length} leituras reais no período de $period',
+          children: [
+            _historyMetric('Solo', latest.soilMoisture, '%'),
+            _historyMetric('Temperatura', latest.temperature, '°C'),
+            _historyMetric('Umidade do ar', latest.airHumidity, '%'),
+            _historyMetric('Luz', latest.illuminance, ' lux'),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildMockSensorChart() => Container(
     padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
     decoration: BoxDecoration(
       color: Colors.white,
@@ -4354,7 +5595,68 @@ class HistoryMockScreen extends StatelessWidget {
     ),
   );
 
-  Widget _buildIrrigationEvents() => Container(
+  Widget _buildIrrigationEvents([String period = '7 dias']) {
+    if (historyStore == null || plantId == null) {
+      return _buildMockIrrigationEvents();
+    }
+    return FutureBuilder<List<IrrigationEventRecord>>(
+      future: historyStore!.listEvents(
+        plantId: plantId!,
+        from: DateTime.now().subtract(Duration(days: _periodDays(period))),
+      ),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _historyLoadingCard('Carregando eventos de irrigação...');
+        }
+        if (snapshot.hasError) {
+          return _historyLoadingCard('Não foi possível carregar os eventos.');
+        }
+        final events = snapshot.data ?? const <IrrigationEventRecord>[];
+        if (events.isEmpty) {
+          return _historyLoadingCard(
+            'Nenhuma irrigação real foi registrada ainda.',
+          );
+        }
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: const [
+              BoxShadow(color: Color(0x12000000), blurRadius: 6),
+            ],
+          ),
+          child: Column(
+            children: [
+              for (final event in events)
+                _HistoryEvent(
+                  icon: event.status == 'completed' ? Icons.check : Icons.close,
+                  color: event.status == 'completed'
+                      ? const Color(0xFF149B68)
+                      : Colors.redAccent,
+                  time: _formatHistoryDate(event.startedAt),
+                  details:
+                      '${event.valve == 'valve_1' ? 'Valv1' : 'Valv2'}   •   ${event.mode}   •   ${event.durationSeconds ?? 0} s',
+                  status: event.status == 'completed'
+                      ? 'Concluída'
+                      : (event.cancellationReason ?? 'Não concluída'),
+                  failed: event.status != 'completed',
+                  information: [
+                    'Data e hora: ${_formatHistoryDate(event.startedAt)}',
+                    'Válvula: ${event.valve == 'valve_1' ? 'Válvula 1 — Nebulização' : 'Válvula 2'}',
+                    'Origem: ${event.mode}',
+                    'Duração: ${event.durationSeconds ?? 0} segundos',
+                    'Status: ${event.status == 'completed' ? 'Concluída' : (event.cancellationReason ?? 'Não concluída')}',
+                  ],
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildMockIrrigationEvents() => Container(
     padding: const EdgeInsets.symmetric(vertical: 8),
     decoration: BoxDecoration(
       color: Colors.white,
@@ -4369,6 +5671,13 @@ class HistoryMockScreen extends StatelessWidget {
           time: 'Hoje, 07:00',
           details: 'Valv2   •   Timer   •   45 s',
           status: 'Concluída',
+          information: [
+            'Data e hora: Hoje, 07:00',
+            'Válvula: Válvula 2',
+            'Origem: Timer',
+            'Duração: 45 segundos',
+            'Status: Concluída',
+          ],
         ),
         _HistoryEvent(
           icon: Icons.check,
@@ -4376,6 +5685,13 @@ class HistoryMockScreen extends StatelessWidget {
           time: 'Ontem, 18:00',
           details: 'Valv2   •   Auto   •   45 s',
           status: 'Concluída',
+          information: [
+            'Data e hora: Ontem, 18:00',
+            'Válvula: Válvula 2',
+            'Origem: Automático',
+            'Duração: 45 segundos',
+            'Status: Concluída',
+          ],
         ),
         _HistoryEvent(
           icon: Icons.close,
@@ -4384,10 +5700,72 @@ class HistoryMockScreen extends StatelessWidget {
           details: 'Valv1   •   Manual',
           status: 'Cancelada por falta de água',
           failed: true,
+          information: [
+            'Data e hora: Ontem, 12:20',
+            'Válvula: Válvula 1 — Nebulização',
+            'Origem: Manual',
+            'Status: Cancelada por falta de água',
+          ],
         ),
       ],
     ),
   );
+  Widget _historyLoadingCard(String message) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(22),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(18),
+      boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 6)],
+    ),
+    child: Text(message, textAlign: TextAlign.center),
+  );
+
+  Widget _historyDataCard({
+    required String title,
+    required List<Widget> children,
+  }) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(18),
+      boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 6)],
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 12),
+        Wrap(spacing: 18, runSpacing: 12, children: children),
+      ],
+    ),
+  );
+
+  Widget _historyMetric(String label, double? value, String unit) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(color: Colors.black54, fontSize: 12)),
+      Text(
+        value == null ? '--' : '${value.toStringAsFixed(1)}$unit',
+        style: const TextStyle(
+          color: _green,
+          fontSize: 18,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    ],
+  );
+
+  String _formatHistoryDate(DateTime date) =>
+      '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} '
+      '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+
+  int _periodDays(String period) => switch (period) {
+    '24 h' => 1,
+    '30 dias' => 30,
+    _ => 7,
+  };
 }
 
 class _ChartLegend extends StatelessWidget {
@@ -4414,6 +5792,7 @@ class _HistoryEvent extends StatelessWidget {
     required this.details,
     required this.status,
     this.failed = false,
+    this.information = const [],
   });
   final IconData icon;
   final Color color;
@@ -4421,59 +5800,104 @@ class _HistoryEvent extends StatelessWidget {
   final String details;
   final String status;
   final bool failed;
+  final List<String> information;
+
+  void _showDetails(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Detalhes da irrigação'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: information.length,
+            separatorBuilder: (_, _) => const Divider(height: 18),
+            itemBuilder: (context, index) => Text(information[index]),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-    child: Row(
-      children: [
-        CircleAvatar(
-          radius: 12,
-          backgroundColor: color,
-          child: Icon(icon, color: Colors.white, size: 16),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Row(
-            children: [
-              SizedBox(
-                width: 88,
-                child: Text(
-                  time,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+  Widget build(BuildContext context) => InkWell(
+    onTap: () => _showDetails(context),
+    borderRadius: BorderRadius.circular(12),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: color,
+            child: Icon(icon, color: Colors.white, size: 16),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        time,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 9,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: failed
+                              ? Colors.red.withValues(alpha: .08)
+                              : const Color(0xFF149B68).withValues(alpha: .10),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: Text(
+                          status,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: failed
+                                ? Colors.red
+                                : const Color(0xFF159B69),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              Expanded(
-                child: Text(
+                const SizedBox(height: 4),
+                Text(
                   details,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                decoration: BoxDecoration(
-                  color: failed
-                      ? Colors.red.withValues(alpha: .08)
-                      : const Color(0xFF149B68).withValues(alpha: .10),
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: Text(
-                  status,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: failed ? Colors.red : const Color(0xFF159B69),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }

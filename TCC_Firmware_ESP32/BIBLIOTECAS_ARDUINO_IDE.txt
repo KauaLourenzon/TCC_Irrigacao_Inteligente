@@ -1,0 +1,52 @@
+DEPENDENCIAS DO FIRMWARE ESP32
+================================
+
+Placa/pacote obrigatório
+------------------------
+Instalar pelo Boards Manager da Arduino IDE:
+
+ESP32 by Espressif Systems
+
+Selecionar uma placa ESP32 compatível, por exemplo:
+ESP32 Dev Module
+
+
+Biblioteca para instalar pelo Library Manager
+----------------------------------------------
+1. ArduinoJson
+   Usar a versão 7.x.
+   Autor: Benoit Blanchon
+
+
+Bibliotecas que já vêm com o pacote ESP32
+-----------------------------------------
+As bibliotecas abaixo são utilizadas pelo firmware, mas não precisam ser
+instaladas separadamente quando o pacote ESP32 by Espressif Systems estiver
+instalado:
+
+- WiFi.h
+- WebServer.h
+- HTTPClient.h
+- Preferences.h
+- Wire.h
+- ESPmDNS.h
+
+
+Observações
+-----------
+- Nesta versão, os sensores BME280 e VEML7700 estão apenas simulados.
+- Por isso, as bibliotecas específicas Adafruit BME280 e Adafruit VEML7700
+  ainda não são necessárias.
+- O firmware utiliza o barramento I2C nos pinos SDA GPIO21 e SCL GPIO22.
+- Se a Arduino IDE solicitar dependências adicionais para o ArduinoJson,
+  aceitar a instalação.
+
+
+Ordem sugerida de instalação
+----------------------------
+1. Instalar a Arduino IDE.
+2. Adicionar o pacote ESP32 by Espressif Systems pelo Boards Manager.
+3. Instalar ArduinoJson pelo Library Manager.
+4. Selecionar a placa ESP32 Dev Module.
+5. Selecionar a porta USB do ESP32.
+6. Abrir Irrigacao_inteligente.ino e fazer o upload.
